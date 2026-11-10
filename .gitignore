@@ -1,0 +1,61 @@
+# Local Android / Gradle state and generated output
+.gradle/
+.kotlin/
+**/build/
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Signing material and local credentials
+secrets/
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pem
+*.key
+.env
+.env.*
+!.env.example
+*credentials*.json
+google-services.json
+key.properties
+keystore.properties
+
+# Editors, operating systems, caches and logs
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+__MACOSX/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.log
+*.hprof
+*.tmp
+*.bak
+.agents/
+.codex/
+
+# Personal collections, device records and exports
+collections/
+imports/
+exports/
+*.db
+*.db-*
+*.sqlite*
+*.zip
+*.aab
+*.idsig
+
+# Publish only the latest app; template.apk is a required, blank build asset.
+*.apk
+!app/src/main/assets/template.apk
+!delivery/Prism-Icon-Studio-0.10.apk
+delivery/*
+!delivery/Prism-Icon-Studio-0.10.apk
+!delivery/SHA256SUMS.txt
