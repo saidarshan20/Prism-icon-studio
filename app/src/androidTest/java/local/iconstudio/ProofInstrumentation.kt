@@ -19,6 +19,17 @@ class ProofInstrumentation:Instrumentation(){
                 val component="com.google.android.apps.maps/TestFixture"
                 val maps=listOf(Matcher.App("Maps","com.google.android.apps.maps",component))
                 fun fixture()=Project(name="Maps preference regression",icons=mutableListOf(Icon("google","Google-Maps.png","fixture"),Icon("maps","Maps.png","fixture")))
+                val original = fixture()
+                original.icons[1].component = component
+                original.icons[1].reason = "Exact app label"
+                Catalog.match(original, maps, emptyMap())
+                check(original.icons[0].component == component && original.icons[1].component == null)
+                val gallery = Matcher.App("Gallery", "com.sec.android.gallery3d", "com.sec.android.gallery3d/Main")
+                val photos = Matcher.App("Photos", "com.google.android.apps.photos", "com.google.android.apps.photos/Main")
+                val galleryPack = Project(icons = mutableListOf(Icon("photos", "Photos.png", "fixture", photos.component, "Exact app label")))
+                Catalog.match(galleryPack, listOf(gallery, photos), emptyMap())
+                check(galleryPack.icons.single().component == gallery.component)
+                check(Catalog.withoutArtwork(galleryPack, listOf(gallery, photos)).single().component == photos.component)
                 store.remember("Google-Maps.png",component)
                 val p=fixture();Catalog.match(p,maps,store.rules(),store.preferredIcons())
                 check(p.icons[0].component==component && p.icons[1].component==null){"Remembered Google Maps artwork lost to automatic Maps match"}
@@ -72,6 +83,8 @@ class ProofInstrumentation:Instrumentation(){
             val c=targetContext;val store=ProjectStore(c)
             val apps=Catalog.load(c)
             check(apps.isNotEmpty()){"Launcher catalog empty"}
+            val ownComponent = c.packageManager.getLaunchIntentForPackage(c.packageName)!!.component!!.flattenToString()
+            val ownApp = apps.single { it.component == ownComponent }
             val fixture=listOf(Matcher.App("Play Store","com.android.vending","com.android.vending/Main"),Matcher.App("Internet","com.sec.android.app.sbrowser","com.sec.android.app.sbrowser/Main"),Matcher.App("Dating","example.dating","example.dating/Main"))
             check(Matcher.match("App-Store.PNG",fixture,emptyMap()).single().app.pkg=="com.android.vending")
             check(Matcher.match("SAFARI.jpg",fixture,emptyMap()).single().app.pkg=="com.sec.android.app.sbrowser")
@@ -102,38 +115,86 @@ class ProofInstrumentation:Instrumentation(){
             solid.recycle()
             val export=c.getExternalFilesDir("proof")!!.apply{mkdirs()}
             val ids=mutableListOf<String>()
-            fun verifyBrand(apk:File,p:Project){
-                val own=c.packageManager.getLaunchIntentForPackage(c.packageName)!!.component!!.flattenToString()
+            fun verifyBrand(apk: File, p: Project, assignedArtwork: Bitmap? = null) {
                 ZipFile(apk).use {z->
                     val parser=android.util.Xml.newPullParser()
                     parser.setInput(z.getInputStream(z.getEntry("assets/appfilter.xml")),"UTF-8")
-                    var name:String?=null
+                    val slots = mutableListOf<String>()
                     while(parser.eventType!=org.xmlpull.v1.XmlPullParser.END_DOCUMENT){
-                        if(parser.eventType==org.xmlpull.v1.XmlPullParser.START_TAG && parser.name=="item" && parser.getAttributeValue(null,"component")=="ComponentInfo{$own}")name=parser.getAttributeValue(null,"drawable")
+                        if (parser.eventType == org.xmlpull.v1.XmlPullParser.START_TAG && parser.name == "item" &&
+                            parser.getAttributeValue(null, "component") == "ComponentInfo{$ownComponent}") {
+                            slots.add(parser.getAttributeValue(null, "drawable"))
+                        }
                         parser.next()
                     }
-                    check(name!=null){"Prism missing from generated pack"}
+                    val name = slots.single()
                     val actual=z.getInputStream(z.getEntry("res/drawable-nodpi-v4/$name.png")).use {android.graphics.BitmapFactory.decodeStream(it)}
-                    val original=c.assets.open("prism-logo.png").use {android.graphics.BitmapFactory.decodeStream(it)}
-                    val expected=IconRenderer.render(original,p.shape,p.scale)
-                    val a=IntArray(192*192);val b=IntArray(192*192)
-                    actual.getPixels(a,0,192,0,0,192,192);expected.getPixels(b,0,192,0,0,192,192)
-                    check(a.contentEquals(b)){"Pack logo differs from pristine bundled image"}
-                    actual.recycle();expected.recycle();original.recycle()
+                    val source = assignedArtwork ?: IconRenderer.loadPrismLogo(c)
+                    val expected = when {
+                        assignedArtwork != null || p.missingIconStyle == MissingIconStyle.UNASSIGNED ->
+                            IconRenderer.render(source, p.shape, p.scale)
+                        else -> {
+                            val palette = if (p.missingIconStyle == MissingIconStyle.THEMED) {
+                                PackPalette.fromArtwork(p.icons.filterNot { it.excluded }.map { it.path })
+                            } else null
+                            IconRenderer.renderFallback(android.graphics.drawable.BitmapDrawable(c.resources, source),
+                                p.shape, p.scale, palette?.forPackage(c.packageName))
+                        }
+                    }
+                    check(actual.sameAs(expected)) { "Pack logo differs from the expected artwork" }
+                    if (p.missingIconStyle == MissingIconStyle.THEMED && assignedArtwork == null) {
+                        val plain = IconRenderer.render(source, p.shape, p.scale)
+                        check(!actual.sameAs(plain)) { "Prism's icon was not given a themed background" }
+                        plain.recycle()
+                    }
+                    actual.recycle(); expected.recycle()
+                    if (assignedArtwork == null) source.recycle()
                 }
             }
             for(n in 1..2){
-                val p=Project(name="Prism Runtime Proof $n",shape="Rounded",scale=0.84f,includeOriginals=n!=1)
+                val p=Project(name="Prism Runtime Proof $n",shape="Rounded",scale=0.84f,
+                    missingIconStyle=if(n==1) MissingIconStyle.UNASSIGNED else MissingIconStyle.THEMED)
                 val image=File(store.directory(p),"proof.png")
                 Bitmap.createBitmap(64,64,Bitmap.Config.ARGB_8888).apply{eraseColor(0xff8957e5.toInt());image.outputStream().use {compress(Bitmap.CompressFormat.PNG,100,it)};recycle()}
-                p.icons.add(Icon("proof","App-Store.png",image.path,apps.first().component,"Runtime proof"))
+                p.icons.add(Icon("proof","App-Store.png",image.path,apps.first { it.component != ownComponent }.component,"Runtime proof"))
                 val builder=PackBuilder(c,store)
                 val first=builder.build(p){}
                 verifyBrand(first,p)
+                if (n == 2) {
+                    val unassigned = Catalog.withoutArtwork(p, apps).firstOrNull()
+                    if (unassigned != null) {
+                        val background = PackPalette.fromArtwork(p.icons.map { it.path })!!.forPackage(unassigned.pkg)
+                        check(background == 0xff8957e5.toInt())
+                        val expected = IconRenderer.renderFallback(IconRenderer.installedIcon(c, unassigned.component),
+                            p.shape, p.scale, background)
+                        ZipFile(first).use { z ->
+                            val actual = z.getInputStream(z.getEntry("res/drawable-nodpi-v4/slot_0001.png"))
+                                .use { android.graphics.BitmapFactory.decodeStream(it) }
+                            check(actual.sameAs(expected)) { "Fallback preview differs from exported artwork" }
+                            actual.recycle()
+                        }
+                        expected.recycle()
+                    }
+                    val saved = store.list().first { it.id == p.id }
+                    check(saved.missingIconStyle == MissingIconStyle.THEMED)
+                    check(saved.lastBuildFingerprint == saved.buildFingerprint())
+                    saved.missingIconStyle = MissingIconStyle.ORIGINAL
+                    check(saved.lastBuildFingerprint != saved.buildFingerprint())
+                }
                 first.copyTo(File(export,"proof-$n-v1.apk"),true)
                 check(c.packageManager.getPackageArchiveInfo(first.path,0)?.packageName=="local.prism.pack.p${p.id}"){"Android rejected generated package"}
                 ZipFile(first).use{z->check(z.getInputStream(z.getEntry("res/drawable-nodpi-v4/slot_0000.png")).readBytes().size>100)}
-                if(n==1){p.name="Renamed Runtime Proof";val second=builder.build(p){};second.copyTo(File(export,"proof-1-v2.apk"),true);check(p.version==2)}
+                if(n==1){
+                    p.name="Renamed Runtime Proof"
+                    p.icons.single().component = ownApp.component
+                    check(ownApp !in Catalog.withoutArtwork(p, apps))
+                    val second=builder.build(p){}
+                    val assigned = android.graphics.BitmapFactory.decodeFile(image.path)
+                    verifyBrand(second, p, assigned)
+                    assigned.recycle()
+                    second.copyTo(File(export,"proof-1-v2.apk"),true)
+                    check(p.version==2)
+                }
                 check(store.list().first {it.id==p.id}.shape=="Rounded")
                 check(store.list().first {it.id==p.id}.scale==0.84f)
                 ids.add(p.id)
@@ -145,7 +206,7 @@ class ProofInstrumentation:Instrumentation(){
                 val filter=z.getInputStream(z.getEntry("assets/appfilter.xml")).readBytes().toString(Charsets.UTF_8)
                 apps.forEach {check(filter.contains("ComponentInfo{${it.component}}")) {"Missing fallback: ${it.component}"}}
             }
-            check(store.list().first {it.id==fallback.id}.includeOriginals)
+            check(store.list().first {it.id==fallback.id}.missingIconStyle == MissingIconStyle.ORIGINAL)
             val ui=Project(name="Scrolling review proof")
             val uiImage=File(store.directory(ui),"fixture.png")
             Bitmap.createBitmap(64,64,Bitmap.Config.ARGB_8888).apply{eraseColor(0xff8957e5.toInt());uiImage.outputStream().use {compress(Bitmap.CompressFormat.PNG,100,it)};recycle()}

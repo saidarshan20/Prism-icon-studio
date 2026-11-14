@@ -4,17 +4,17 @@
 
 <h1 align="center">Prism Icon Studio</h1>
 <p align="center">Turn your icon collections into Android icon packs, entirely on your phone.</p>
-<p align="center"><strong>Android 9+ · Kotlin & Jetpack Compose · Offline · Latest build: 0.10</strong></p>
+<p align="center"><strong>Android 9+ · Kotlin & Jetpack Compose · Offline · Latest build: 0.13</strong></p>
 
 Prism imports a folder or ZIP of icons, helps you match artwork to installed apps, and builds an installable icon-pack APK on your device. Save collections, remember your choices, and adjust icon shape and size before building.
 
 ## Download
 
-**[Download Prism Icon Studio 0.10](delivery/Prism-Icon-Studio-0.10.apk?raw=true)** · [SHA-256 checksum](delivery/SHA256SUMS.txt)
+**[Download Prism Icon Studio 0.13](delivery/Prism-Icon-Studio-0.13.apk?raw=true)** · [SHA-256 checksum](delivery/SHA256SUMS.txt)
 
-Only the latest app APK is included. Its Android version name is `0.10-review-navigation` (version code `10`). This is the existing signed 0.10 build; repository cleanup does not replace or re-sign it.
+The current signed APK is version `0.13` (version code `13`). On this workstation, previous, preview, test, and unsigned builds are kept in `delivery/archive/`.
 
-Install the APK on Android 9 or later. Android may ask you to allow installation from the app opening the download. To preserve existing Prism projects, install updates over your current installation with the same signing key.
+Install the APK on Android 9 or later. Android may ask you to allow installation from the app opening the APK. Version 0.12 uses a new signing key, so moving from 0.10 requires uninstalling 0.10 first. Installing later releases over 0.12 with the same signing key preserves existing Prism projects.
 
 ## Screenshots
 
@@ -28,6 +28,9 @@ Install the APK on Android 9 or later. Android may ask you to allow installation
   &nbsp;
   <img src="docs/screenshots/app-picker.jpg" width="260" alt="App chooser with search and remembered icon-name matching">
 </p>
+<p align="center">
+  <img src="docs/screenshots/themed-apps-preview.jpg" width="260" alt="Themed apps tab showing original and recolored icons side by side">
+</p>
 
 App screenshots supplied by the author. Featured icon artwork is credited below.
 
@@ -37,7 +40,7 @@ App screenshots supplied by the author. Featured icon artwork is credited below.
 - Match icons to installed launcher apps, review ambiguous matches, and search for an app manually.
 - Remember icon-name choices across collections; refresh automatic matches without losing manual selections.
 - Preview icon shapes and sizes, including the device's adaptive icon mask.
-- Include static original app icons for apps without replacement artwork.
+- Preview before and after for apps without artwork. Resize original icons or use **Match this pack** to style them with colors sampled from the current collection.
 - Build, sign and install resource-only icon packs on the device.
 - Keep multiple saved collections and rebuild them as updates with stable pack identities.
 - Use system, light or dark appearance.
@@ -49,7 +52,7 @@ Prism requests no Internet permission and requires no account, server or root ac
 1. Download an icon collection to your phone and open Prism.
 2. Choose **Import folder** or **Import ZIP**, then select the collection with Android's file picker.
 3. Review matches, choose apps for uncertain icons, and enable **Remember this icon name** when useful.
-4. Choose a collection name, shape, artwork size and whether to include original app icons.
+4. Choose a collection name, shape and artwork size. Under **Apps without artwork**, choose **Match this pack**. Prism opens **Themed apps** beside **Needs review**, with searchable before-and-after previews.
 5. Tap **Build pack**, then **Install**. If prompted, grant Prism permission to install packages and retry.
 6. Select the installed pack in your compatible launcher or theme tool.
 
@@ -60,6 +63,18 @@ For Samsung, open **Good Lock → Theme Park → Icon → Create new**, select t
 Remembered artwork now resolves competing icon names more consistently. Explicit project choices take priority, followed by the most recently preferred remembered name. Indistinguishable duplicates still require review. Existing collections can use **Refresh automatic matches** without reimporting.
 
 The remember-choice row is fully tappable and vertically aligned. System Back dismisses the app chooser first; Back from the editor returns to the collection library.
+
+## What's new in 0.13
+
+Prism now appears in its own app picker. **Match this pack** gives the bundled Prism gem a themed background when Prism has no artwork assigned. Open your existing collection and rebuild and install the pack to apply the change in Theme Park.
+
+## What's new in 0.12
+
+**Match this pack** is part of the regular Prism app. To retire the separate preview app on the phone, first recreate any collections you want to keep in Prism, then uninstall **Prism Preview**.
+
+For existing collections, **Refresh automatic matches** updates automatic assignments. Dedicated Google Maps artwork takes priority over a generic Maps icon. With a pack such as Ghibli, `Photos.png` goes to Samsung Gallery. Google Photos appears under **Themed apps** when it has no dedicated artwork. Saved manual choices take priority.
+
+For Gaming Hub, Prism matches both `Game.png` and `Games.png` to the installed Samsung app. In an existing Ghibli collection, use **Refresh automatic matches** or assign `Games.png` in the app picker, then build and install the pack. In Theme Park, use **Create new** and select the rebuilt icon pack before saving and applying it.
 
 ## Build from source
 
@@ -87,6 +102,16 @@ python tools/prepare.py
 Optional `--proof` and `--inventory` flags use local collection folders outside this repository. They are development helpers and are unnecessary for a normal build.
 
 ### Release signing
+
+The personal 0.12 release starts a new signing identity for `local.iconstudio`. To build future releases that update that install, run `:app:assembleRelease` without signing variables, then sign the resulting APK with the existing local `secrets/Sign-PrismRelease.ps1` helper.
+
+```powershell
+.\secrets\Sign-PrismRelease.ps1 -UnsignedApk .\app\build\outputs\apk\release\app-release-unsigned.apk -OutputApk .\delivery\Prism-Icon-Studio-NEXT.apk
+```
+
+The helper verifies the signing certificate before saving the APK. Keep the existing `prism-release.p12` and its password for future releases. The local encrypted password works with this Windows account. For recovery on another machine, back up the keystore and save the password separately in a password manager. The helper's `-CopyRecoveryPassword` option copies the password without printing it.
+
+### Gradle signing configuration
 
 ```sh
 ./gradlew :app:assembleRelease

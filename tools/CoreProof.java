@@ -14,7 +14,7 @@ public class CoreProof {
    if(!Matcher.match(name+".png",List.of(a),Map.of()).get(0).automatic)throw new AssertionError(name);
    if(Matcher.match(name+".png",List.of(a,new Matcher.App(name,"other.app","other.app/Main")),Map.of()).stream().anyMatch(m->m.automatic))throw new AssertionError("Ambiguous "+name);
   }
-  String[][] aliases={{"Twitter","com.twitter.android"},{"GMaps","com.google.android.apps.maps"},{"Google-Maps","com.google.android.apps.maps"},{"Reminders","com.samsung.android.app.reminder"},{"Shortcuts","com.samsung.android.app.routines"},{"FaceTime","com.google.android.apps.tachyon"},{"Find-My","com.samsung.android.app.find"},{"Game","com.samsung.android.game.gamehome"},{"Files","com.sec.android.app.myfiles"}};
+  String[][] aliases={{"Twitter","com.twitter.android"},{"GMaps","com.google.android.apps.maps"},{"Google-Maps","com.google.android.apps.maps"},{"Reminders","com.samsung.android.app.reminder"},{"Shortcuts","com.samsung.android.app.routines"},{"FaceTime","com.google.android.apps.tachyon"},{"Find-My","com.samsung.android.app.find"},{"Game","com.samsung.android.game.gamehome"},{"Games","com.samsung.android.game.gamehome"},{"Files","com.sec.android.app.myfiles"}};
   for(var alias:aliases){
    var a=new Matcher.App("Renamed target",alias[1],alias[1]+"/Main");
    var m=Matcher.match(alias[0]+".PNG",List.of(a),Map.of());
@@ -23,6 +23,21 @@ public class CoreProof {
    var override=new Matcher.App("Custom","test.custom","test.custom/Main");
    if(!Matcher.match(alias[0]+".png",List.of(a,override),Map.of(Matcher.normalize(alias[0]),override.component)).get(0).app.component.equals(override.component))throw new AssertionError("Saved preference priority");
   }
+  var mapPackage = "com.google.android.apps.maps";
+  var maps = new Matcher.App("Maps", mapPackage, mapPackage + "/Main", true);
+  var driving = new Matcher.App("Driving", mapPackage, mapPackage + "/Driving");
+  if (!Matcher.match("Google-Maps.png", List.of(driving, maps), Map.of()).get(0).app.component.equals(maps.component))
+   throw new AssertionError("Prefer primary Google Maps activity");
+  if (Matcher.defaultArtworkPriority("Google-Maps.png", mapPackage) <= Matcher.defaultArtworkPriority("Maps.png", mapPackage))
+   throw new AssertionError("Prefer dedicated map artwork");
+  var gallery = new Matcher.App("Gallery", "com.sec.android.gallery3d", "com.sec.android.gallery3d/Main");
+  var photos = new Matcher.App("Photos", "com.google.android.apps.photos", "com.google.android.apps.photos/Main");
+  if (!Matcher.match("Photos.png", List.of(photos, gallery), Map.of()).get(0).app.component.equals(gallery.component))
+   throw new AssertionError("Use source Photos artwork for Samsung Gallery");
+  if (!Matcher.match("Photos.png", List.of(photos, gallery), Map.of("photos", photos.component)).get(0).app.component.equals(photos.component))
+   throw new AssertionError("Preserve explicit Photos preference");
+  if (!Matcher.match("Google-Photos.png", List.of(photos, gallery), Map.of()).get(0).app.component.equals(photos.component))
+   throw new AssertionError("Honor dedicated Google Photos artwork");
   try(var zip=new ZipFile(args[0]);var out=new ZipOutputStream(Files.newOutputStream(Path.of(args[1])))){
    var entries=zip.entries();while(entries.hasMoreElements()){
     var e=entries.nextElement();byte[] bytes=zip.getInputStream(e).readAllBytes();

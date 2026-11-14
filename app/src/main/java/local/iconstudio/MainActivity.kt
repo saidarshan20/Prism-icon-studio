@@ -2,14 +2,18 @@ package local.iconstudio
 
 import android.app.Application
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.*
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -17,6 +21,7 @@ import androidx.compose.foundation.lazy.grid.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -27,14 +32,26 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.*
 import local.iconstudio.core.Matcher
 
+private const val THEMED_APPS = "Themed apps"
+
 class StudioModel(app:Application):AndroidViewModel(app){
     val store=ProjectStore(app)
     var projects by mutableStateOf(store.list());var current by mutableStateOf<Project?>(null)
     var apps by mutableStateOf<List<Matcher.App>>(emptyList())
+    var appsLoaded by mutableStateOf(false)
     var message by mutableStateOf("");var busy by mutableStateOf(false)
     var revision by mutableIntStateOf(0)
     private var job:Job?=null
-    init {viewModelScope.launch(Dispatchers.IO){apps=Catalog.load(app)}}
+    init {
+        viewModelScope.launch {
+            try {
+                apps = withContext(Dispatchers.IO) { Catalog.load(app) }
+                appsLoaded = true
+            } catch (_: Exception) {
+                message = "Could not load installed apps. Refresh automatic matches to try again."
+            }
+        }
+    }
     fun save(){current?.let {store.save(it)};projects=store.list();revision++}
     fun run(block:suspend ()->Unit){if(busy)return;busy=true;job=viewModelScope.launch {try{withContext(Dispatchers.IO){block()}}catch(e:CancellationException){message="Cancelled. Saved projects are intact."}catch(e:Exception){message=e.message?:"Operation failed"}finally{busy=false;projects=store.list();revision++}}}
     fun import(uri:android.net.Uri,folder:Boolean){run {
@@ -47,7 +64,7 @@ class StudioModel(app:Application):AndroidViewModel(app){
     }}
     fun build(){val p=current?:return;save();run {PackBuilder(getApplication(),store).build(p){message=it}}}
     fun rematch(){val p=current?:return;run {
-        apps=Catalog.load(getApplication());Catalog.match(p,apps,store.rules(),store.preferredIcons());store.save(p)
+        apps=Catalog.load(getApplication());appsLoaded=true;Catalog.match(p,apps,store.rules(),store.preferredIcons());store.save(p)
         message="Matching refreshed. Exact unique app names are assigned; conflicting names and artwork still need review."
     }}
     fun delete(p:Project){run {store.delete(p);if(current?.id==p.id)current=null;message="Collection deleted. Remembered matching choices were kept."}}
@@ -111,24 +128,34 @@ class MainActivity:ComponentActivity(){
 @Composable fun ColumnScope.Editor(model:StudioModel,p:Project,activity:MainActivity){
     val revision=model.revision
     var query by remember(p.id){mutableStateOf("")};var filter by remember(p.id){mutableStateOf("All")};var editing by remember {mutableStateOf<Icon?>(null)}
-    BackHandler(enabled=editing==null){model.goHome()}
     var name by remember(p.id){mutableStateOf(p.name)}
     var shape by remember(p.id){mutableStateOf(p.shape)}
     var scale by remember(p.id){mutableFloatStateOf(p.scale)}
-    var includeOriginals by remember(p.id){mutableStateOf(p.includeOriginals)}
+    var missingStyle by remember(p.id) { mutableStateOf(p.missingIconStyle) }
+    val themed = missingStyle == MissingIconStyle.THEMED
+    BackHandler(enabled = editing == null) { if (!model.busy) model.goHome() }
+    val missingApps = remember(p.id, revision, model.apps) { Catalog.withoutArtwork(p, model.apps) }
+    val missingMatches = remember(missingApps, query) {
+        missingApps.filter { it.label.contains(query, true) || it.pkg.contains(query, true) }
+    }
+    val paletteInputs = remember(p.id, revision) { p.icons.filterNot { it.excluded }.map { it.path } }
+    val readPalette = themed && missingApps.isNotEmpty()
+    val palette by produceState<PaletteResult?>(null, paletteInputs, readPalette) {
+        value = null
+        if (readPalette) {
+            value = PaletteResult(withContext(Dispatchers.IO) { PackPalette.fromArtwork(paletteInputs) })
+        }
+    }
+    val gridState = rememberLazyGridState()
+    val themedTab = remember { BringIntoViewRequester() }
+    val scope = rememberCoroutineScope()
     val visible=remember(p.id,revision,query,filter){p.icons.filter {it.name.contains(query,true) && when(filter){"Matched"->it.component!=null&&!it.excluded;"Needs review"->it.component==null&&!it.excluded;"Excluded"->it.excluded;else->true}}}
-    LazyVerticalGrid(columns=GridCells.Adaptive(145.dp),modifier=Modifier.weight(1f),contentPadding=PaddingValues(vertical=8.dp),verticalArrangement=Arrangement.spacedBy(10.dp),horizontalArrangement=Arrangement.spacedBy(10.dp)){
+    LazyVerticalGrid(columns=GridCells.Adaptive(145.dp),state=gridState,modifier=Modifier.weight(1f),contentPadding=PaddingValues(vertical=8.dp),verticalArrangement=Arrangement.spacedBy(10.dp),horizontalArrangement=Arrangement.spacedBy(10.dp)){
         item(key="settings",span={GridItemSpan(maxLineSpan)}){Column{
     OutlinedTextField(name,{name=it.take(80);p.name=name;model.save()},label={Text("Pack name")},singleLine=true,modifier=Modifier.fillMaxWidth(),enabled=!model.busy)
     Row(Modifier.horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(8.dp)){
         listOf("Device","Original","Rounded","Circle").forEach { choice->FilterChip(selected=shape==choice,onClick={shape=choice;p.shape=choice;model.save()},enabled=!model.busy,label={Text(choice)}) }
     }
-    Row(verticalAlignment=androidx.compose.ui.Alignment.CenterVertically){
-        Checkbox(includeOriginals,{includeOriginals=it;p.includeOriginals=it;model.save()},enabled=!model.busy)
-        Text("Use the same size for other apps",style=MaterialTheme.typography.bodySmall)
-        TextButton(enabled=!model.busy,onClick={shape="Device";scale=0.90f;includeOriginals=true;p.shape=shape;p.scale=scale;p.includeOriginals=true;model.save()}){Text("Reset")}
-    }
-    Text("Size is applied before installation. Other app icons are static copies; rebuild after app changes. 90% is the consistent preset, not a factory measurement.",style=MaterialTheme.typography.bodySmall)
     Row(verticalAlignment=androidx.compose.ui.Alignment.CenterVertically){
         p.icons.firstOrNull { !it.excluded }?.let {icon->
             val preview by produceState<android.graphics.Bitmap?>(null,icon.path,shape,scale){value=withContext(Dispatchers.Default){BitmapFactory.decodeFile(icon.path)?.let { source->IconRenderer.render(source,shape,scale).also {source.recycle()} }}}
@@ -139,16 +166,84 @@ class MainActivity:ComponentActivity(){
             Slider(value=scale,onValueChange={scale=it;p.scale=it},onValueChangeFinished={model.save()},valueRange=0.6f..1f,enabled=!model.busy)
         }
     }
-            TextButton(onClick={model.rematch()},enabled=!model.busy){Text("Refresh automatic matches")}
+        Text("Apps without artwork", style = MaterialTheme.typography.titleSmall)
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).selectableGroup(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            MissingIconStyle.entries.forEach { style ->
+                FilterChip(selected = missingStyle == style, enabled = !model.busy && model.appsLoaded, onClick = {
+                    missingStyle = style
+                    p.missingIconStyle = style
+                    model.save()
+                    if (style == MissingIconStyle.THEMED) {
+                        query = ""
+                        filter = THEMED_APPS
+                        scope.launch { gridState.animateScrollToItem(1); themedTab.bringIntoView() }
+                    } else if (filter == THEMED_APPS) {
+                        filter = "All"
+                    }
+                }, label = { Text(style.label) })
+            }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            TextButton(onClick = { model.rematch() }, enabled = !model.busy) { Text("Refresh automatic matches") }
+            TextButton(enabled = !model.busy, onClick = {
+                shape = "Device"
+                scale = 0.90f
+                missingStyle = MissingIconStyle.ORIGINAL
+                if (filter == THEMED_APPS) filter = "All"
+                p.shape = shape
+                p.scale = scale
+                p.missingIconStyle = missingStyle
+                model.save()
+            }) { Text("Reset") }
+        }
         }}
         stickyHeader(key="categories") { Surface(color=MaterialTheme.colorScheme.surface,modifier=Modifier.fillMaxWidth()) {
     Row(Modifier.horizontalScroll(rememberScrollState()).padding(vertical=8.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)){
-        listOf("All","Matched","Needs review","Excluded","Missing apps").forEach { label->FilterChip(selected=filter==label,onClick={filter=label},label={Text(label)}) }
+        val categories = buildList {
+            addAll(listOf("All", "Matched", "Needs review"))
+            if (themed) add(THEMED_APPS)
+            addAll(listOf("Excluded", "Missing apps"))
+        }
+        categories.forEach { label ->
+            val modifier = if (label == THEMED_APPS) Modifier.bringIntoViewRequester(themedTab) else Modifier
+            FilterChip(selected = filter == label, onClick = { filter = label }, modifier = modifier, label = { Text(label) })
+        }
     }
         }}
         item(key="search",span={GridItemSpan(maxLineSpan)}){OutlinedTextField(query,{query=it},label={Text("Search images or apps")},singleLine=true,modifier=Modifier.fillMaxWidth())}
-        if(filter=="Missing apps"){
-            items(model.apps.filter {app->p.icons.none { !it.excluded&&it.component==app.component }&&app.label.contains(query,true) },key={"missing:${it.component}"},span={GridItemSpan(maxLineSpan)}){app->Text("${app.label}\n${app.component}",Modifier.padding(12.dp))}
+        if (filter == THEMED_APPS) {
+            val colors = palette
+            when {
+                missingApps.isEmpty() -> item(span = { GridItemSpan(maxLineSpan) }) {
+                    Text(if (model.appsLoaded) "Every app in Prism’s catalog has artwork." else "Reading installed apps",
+                        Modifier.padding(12.dp))
+                }
+                colors == null -> item(span = { GridItemSpan(maxLineSpan) }) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        LinearProgressIndicator(Modifier.fillMaxWidth())
+                        Text("Reading collection colors")
+                    }
+                }
+                else -> {
+                    if (colors.palette == null) item(span = { GridItemSpan(maxLineSpan) }) {
+                        Text("Prism could not detect background colors. The pack will use resized originals.", Modifier.padding(12.dp))
+                    }
+                    if (missingMatches.isEmpty()) item(span = { GridItemSpan(maxLineSpan) }) {
+                        Text("No matching apps", Modifier.padding(12.dp))
+                    }
+                    items(missingMatches, key = { "themed:" + it.component }) { app ->
+                        ThemedAppCard(activity, app, shape, scale, colors.palette?.forPackage(app.pkg))
+                    }
+                }
+            }
+        } else if (filter=="Missing apps"){
+            items(missingMatches,
+                key = { "missing:${it.component}" }, span = { GridItemSpan(maxLineSpan) }) { app ->
+                Text("${app.label}\n${app.component}", Modifier.padding(12.dp))
+            }
         }else {
         items(visible,key={it.id}){icon->Card(onClick={editing=icon},enabled=!model.busy,shape=RoundedCornerShape(20.dp)){
             Column(Modifier.padding(12.dp)){
@@ -162,7 +257,13 @@ class MainActivity:ComponentActivity(){
     }
     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(8.dp)){
         Button(onClick={model.build()},enabled=!model.busy){Text("Build pack")}
-        p.lastApk?.let {path->OutlinedButton(onClick={runCatching {Installer.install(activity,java.io.File(path),p.name)}.onFailure {model.message=it.message.orEmpty()}},enabled=!model.busy && p.lastBuildName==p.name){Text(if(p.lastBuildName==p.name)"Install" else "Rebuild to install")}}
+        p.lastApk?.let { path ->
+            val currentBuild = remember(p.id, revision, scale) { p.lastBuildFingerprint == p.buildFingerprint() }
+            OutlinedButton(onClick = {
+                runCatching { Installer.install(activity, java.io.File(path), p.name) }
+                    .onFailure { model.message = it.message.orEmpty() }
+            }, enabled = !model.busy && currentBuild) { Text(if (currentBuild) "Install" else "Rebuild to install") }
+        }
         TextButton(onClick={val intent=activity.packageManager.getLaunchIntentForPackage("com.samsung.android.themedesigner");if(intent!=null)activity.startActivity(intent)else model.message="Open Good Lock → Theme Park → Icon → Create new → icon-pack selector. Choose your installed Prism pack, save the theme, then apply it. After updates, reselect the pack or create a new icon theme."}){Text("Theme Park")}
     }
     editing?.let {icon->
@@ -192,8 +293,40 @@ class MainActivity:ComponentActivity(){
 
 @Composable fun OriginalIcon(context:android.content.Context,component:String){
     val bitmap by produceState<android.graphics.Bitmap?>(null,component){value=withContext(Dispatchers.IO){runCatching {
-        val d=context.packageManager.getActivityIcon(android.content.ComponentName.unflattenFromString(component)!!)
-        android.graphics.Bitmap.createBitmap(96,96,android.graphics.Bitmap.Config.ARGB_8888).also {d.setBounds(0,0,96,96);d.draw(android.graphics.Canvas(it))}
+        IconRenderer.snapshot(IconRenderer.installedIcon(context, component))
     }.getOrNull()}}
     bitmap?.let {Image(it.asImageBitmap(),"Original app icon",Modifier.size(48.dp).padding(6.dp))}
+}
+
+private data class PaletteResult(val palette: PackPalette?)
+
+@Composable
+private fun ThemedAppCard(
+    activity: MainActivity, app: Matcher.App, shape: String, scale: Float, background: Int?,
+) {
+    val images by produceState<Pair<Bitmap, Bitmap>?>(null, app.component, shape, scale, background) {
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                val icon = IconRenderer.installedIcon(activity, app.component)
+                val after = IconRenderer.renderFallback(icon, shape, scale, background)
+                IconRenderer.snapshot(IconRenderer.installedIcon(activity, app.component)) to after
+            }.getOrNull()
+        }
+    }
+    Card(shape = RoundedCornerShape(20.dp)) {
+        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(app.label, style = MaterialTheme.typography.titleSmall, maxLines = 2,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf("Before" to images?.first, "After" to images?.second).forEach { (label, bitmap) ->
+                    Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                        val iconSize = Modifier.widthIn(max = 52.dp).fillMaxWidth().aspectRatio(1f)
+                        if (bitmap == null) Box(iconSize)
+                        else Image(bitmap.asImageBitmap(), "${app.label} ${label.lowercase()}", iconSize)
+                        Text(label, style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
+        }
+    }
 }

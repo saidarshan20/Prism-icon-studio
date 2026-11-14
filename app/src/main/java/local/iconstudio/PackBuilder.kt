@@ -1,7 +1,8 @@
 package local.iconstudio
 
 import android.content.Context
-import android.graphics.*
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import com.android.apksig.ApkSigner
@@ -18,21 +19,30 @@ import java.util.zip.*
 
 class PackBuilder(private val context: Context, private val store: ProjectStore) {
     suspend fun build(p: Project, progress: (String)->Unit): File {
-        val selected=p.icons.filter { !it.excluded && it.component!=null && it.component?.substringBefore('/')!=context.packageName }.toMutableList()
-        val originals=if(p.includeOriginals)Catalog.load(context).filter { app->selected.none {it.component==app.component} } else emptyList()
-        // Fallback entries are build-only; imported assets and review decisions stay unchanged.
-        originals.forEach {app-> selected.add(Icon("native:${app.component}",app.label,"",app.component,"Original app icon")) }
+        val selected = p.icons.filter { !it.excluded && it.component != null }.toMutableList()
+        val originals = if (p.missingIconStyle == MissingIconStyle.UNASSIGNED) emptyList()
+            else Catalog.withoutArtwork(p, Catalog.load(context))
+        val palette = if (p.missingIconStyle == MissingIconStyle.THEMED && originals.isNotEmpty()) {
+            progress("Reading collection colors")
+            PackPalette.fromArtwork(p.icons.filterNot { it.excluded }.map { it.path })
+        } else null
+        val appsByComponent = originals.associateBy { it.component }
+        originals.forEach { app -> selected.add(Icon("native:${app.component}", app.label, "", app.component, "Fallback app icon")) }
         require(selected.isNotEmpty()){ "Assign at least one icon or enable original icons." }
-        val ownComponent=context.packageManager.getLaunchIntentForPackage(context.packageName)?.component
-            ?: error("Prism launcher entry is unavailable")
-        // Always map our own launcher to pristine bundled art, never a themed snapshot.
-        selected.add(Icon("prism:brand","Prism","",ownComponent.flattenToString(),"Bundled Prism logo"))
+        if (p.missingIconStyle == MissingIconStyle.UNASSIGNED) {
+            val ownComponent = context.packageManager.getLaunchIntentForPackage(context.packageName)?.component
+                ?: error("Prism launcher entry is unavailable")
+            val component = ownComponent.flattenToString()
+            // Preserve the bundled launcher icon for partial packs, unless the user picked artwork.
+            if (selected.none { it.component == component }) {
+                selected.add(Icon("prism:brand", "Prism", "", component, "Bundled Prism logo"))
+            }
+        }
         require(selected.size<=512){ "This prototype supports 512 launcher activities including originals. Disable original-icon inclusion or reduce assignments." }
         require(selected.map { it.component }.distinct().size==selected.size){ "Choose one icon per launcher activity." }
         val pkg="local.prism.pack.p${p.id}"
         val version=p.version+1
         val buildName=p.name.trim().ifEmpty {"New collection"}.take(80)
-        p.name=buildName
         val raw=File(store.directory(p),"unsigned.tmp")
         val output=File(store.directory(p),"pack-$version.apk")
         val replacements=selected.mapIndexed { i,icon -> "ComponentInfo{prism.placeholder%04d/prism.placeholder%04d.Main}".format(i,i) to "ComponentInfo{${icon.component}}" }.toMap()
@@ -47,14 +57,22 @@ class PackBuilder(private val context: Context, private val store: ProjectStore)
                     if(slot!=null && slot<selected.size){
                         progress("Preparing images ${slot+1}/${selected.size}")
                         val icon=selected[slot]
-                        val image=if(icon.id=="prism:brand") {
-                            context.assets.open("prism-logo.png").use { BitmapFactory.decodeStream(it) } ?: error("Bundled Prism logo missing")
-                        } else if(icon.id.startsWith("native:")) {
-                            val drawable=context.packageManager.getActivityIcon(android.content.ComponentName.unflattenFromString(icon.component!!)!!)
-                            Bitmap.createBitmap(192,192,Bitmap.Config.ARGB_8888).also {drawable.setBounds(0,0,192,192);drawable.draw(Canvas(it))}
-                        } else BitmapFactory.decodeFile(icon.path) ?: error("Image missing. Import it again.")
-                        val bitmap=IconRenderer.render(image,p.shape,p.scale,normalizeVisible=icon.id.startsWith("native:"))
-                        bytes=java.io.ByteArrayOutputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG,100,it);it.toByteArray() };image.recycle();bitmap.recycle()
+                        val app = appsByComponent[icon.component]
+                        val bitmap = if (app != null) {
+                            IconRenderer.renderFallback(IconRenderer.installedIcon(context, app.component),
+                                p.shape, p.scale, palette?.forPackage(app.pkg))
+                        } else {
+                            val image = if (icon.id == "prism:brand") {
+                                IconRenderer.loadPrismLogo(context)
+                            } else BitmapFactory.decodeFile(icon.path) ?: error("Image missing. Import it again.")
+                            try { IconRenderer.render(image, p.shape, p.scale) } finally { image.recycle() }
+                        }
+                        bytes = try {
+                            java.io.ByteArrayOutputStream().use {
+                                check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it))
+                                it.toByteArray()
+                            }
+                        } finally { bitmap.recycle() }
                     } else if(entry.name=="AndroidManifest.xml" || entry.name=="resources.arsc" || entry.name=="res/xml/appfilter.xml") {
                         progress("Generating resource mappings")
                         bytes=BinaryResources.rewrite(bytes,::replace,pkg,version)
@@ -83,7 +101,15 @@ class PackBuilder(private val context: Context, private val store: ProjectStore)
             val application=info.applicationInfo ?: error("Generated pack has no application metadata")
             application.sourceDir=output.path;application.publicSourceDir=output.path
             check(application.loadLabel(context.packageManager).toString()==buildName){"Generated pack name verification failed"}
-            p.lastBuildName=buildName;p.version=version;p.lastApk=output.path;store.built(p);progress("Ready to install");return output
+            val built = p.copy(name = buildName, version = version, lastApk = output.path)
+            built.lastBuildFingerprint = built.buildFingerprint()
+            store.built(built)
+            p.name = built.name
+            p.version = built.version
+            p.lastApk = built.lastApk
+            p.lastBuildFingerprint = built.lastBuildFingerprint
+            progress("Ready to install")
+            return output
         } catch(e:Exception){output.delete();throw e}finally{raw.delete()}
     }
 }

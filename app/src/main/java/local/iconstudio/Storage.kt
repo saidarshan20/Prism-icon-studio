@@ -5,10 +5,38 @@ import android.database.sqlite.SQLiteDatabase
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.security.MessageDigest
 import java.util.UUID
 
 data class Icon(val id: String, val name: String, val path: String, var component: String? = null, var reason: String = "Needs review", var excluded: Boolean = false)
-data class Project(val id: String = UUID.randomUUID().toString().replace("-", ""), var name: String = "My icon pack", var version: Int = 0, val icons: MutableList<Icon> = mutableListOf(), var lastApk: String? = null, var shape: String = "Device", var scale: Float = 0.90f, var includeOriginals: Boolean = true, var lastBuildName: String? = null)
+
+enum class MissingIconStyle(val label: String) {
+    UNASSIGNED("Leave unassigned"),
+    ORIGINAL("Resize originals"),
+    THEMED("Match this pack"),
+}
+
+data class Project(
+    val id: String = UUID.randomUUID().toString().replace("-", ""),
+    var name: String = "My icon pack",
+    var version: Int = 0,
+    val icons: MutableList<Icon> = mutableListOf(),
+    var lastApk: String? = null,
+    var shape: String = "Device",
+    var scale: Float = 0.90f,
+    var missingIconStyle: MissingIconStyle = MissingIconStyle.ORIGINAL,
+    var lastBuildFingerprint: String? = null,
+) {
+    fun buildFingerprint(): String {
+        val inputs = JSONArray(listOf(name, shape, scale.toDouble(), missingIconStyle.name))
+        if (missingIconStyle == MissingIconStyle.THEMED) inputs.put("themed-prism-logo")
+        icons.forEach { icon ->
+            inputs.put(JSONArray(listOf(icon.id, icon.component ?: "", icon.excluded)))
+        }
+        return MessageDigest.getInstance("SHA-256").digest(inputs.toString().toByteArray())
+            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    }
+}
 
 class ProjectStore(context: Context) {
     val root = File(context.filesDir, "projects").apply { mkdirs() }
@@ -21,7 +49,9 @@ class ProjectStore(context: Context) {
     }
     fun directory(p: Project) = File(root,p.id).apply { mkdirs() }
     @Synchronized fun save(p: Project) {
-        val json = JSONObject().put("id", p.id).put("name", p.name).put("version",p.version).put("lastApk",p.lastApk).put("shape",p.shape).put("scale",p.scale.toDouble()).put("includeOriginals",p.includeOriginals).put("lastBuildName",p.lastBuildName)
+        val json = JSONObject().put("id", p.id).put("name", p.name).put("version",p.version).put("lastApk",p.lastApk).put("shape",p.shape).put("scale",p.scale.toDouble())
+            .put("missingIconStyle", p.missingIconStyle.name)
+            .put("lastBuildFingerprint", p.lastBuildFingerprint ?: JSONObject.NULL)
         json.put("icons",JSONArray(p.icons.map { JSONObject().put("id",it.id).put("name",it.name).put("path",it.path).put("component",it.component).put("reason",it.reason).put("excluded",it.excluded) }))
         db.execSQL("INSERT OR REPLACE INTO projects VALUES (?,?)",arrayOf(p.id,json.toString()))
     }
@@ -30,9 +60,11 @@ class ProjectStore(context: Context) {
         db.rawQuery("SELECT body FROM projects ORDER BY rowid DESC",null).use { c -> while(c.moveToNext()) {
             val j=JSONObject(c.getString(0));val p=Project(j.getString("id"),j.getString("name"),j.getInt("version"),lastApk=j.optString("lastApk").takeIf { it.isNotEmpty() && it!="null" })
             p.shape=j.optString("shape","Original");p.scale=j.optDouble("scale",1.0).toFloat().coerceIn(0.6f,1f)
-            p.lastBuildName=j.optString("lastBuildName").takeIf {it.isNotBlank() && it!="null"}
-            p.includeOriginals=j.optBoolean("includeOriginals",true)
-            val icons=j.getJSONArray("icons");for(i in 0 until icons.length()) { val a=icons.getJSONObject(i);p.icons.add(Icon(a.getString("id"),a.getString("name"),a.getString("path"),a.optString("component").takeIf { it.isNotEmpty()&&it!="null" },a.getString("reason"),a.optBoolean("excluded"))) };list.add(p)
+            p.missingIconStyle = MissingIconStyle.entries.firstOrNull { it.name == j.optString("missingIconStyle") }
+                ?: if (j.optBoolean("includeOriginals", true)) MissingIconStyle.ORIGINAL else MissingIconStyle.UNASSIGNED
+            val icons=j.getJSONArray("icons");for(i in 0 until icons.length()) { val a=icons.getJSONObject(i);p.icons.add(Icon(a.getString("id"),a.getString("name"),a.getString("path"),a.optString("component").takeIf { it.isNotEmpty()&&it!="null" },a.getString("reason"),a.optBoolean("excluded"))) }
+            p.lastBuildFingerprint = j.optString("lastBuildFingerprint").takeIf { it.isNotBlank() && it != "null" }
+            list.add(p)
         }}
         return list
     }

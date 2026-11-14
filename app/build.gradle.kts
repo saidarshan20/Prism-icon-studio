@@ -6,7 +6,7 @@ plugins {
 android {
     namespace = "local.iconstudio"
     compileSdk = 36
-    defaultConfig { applicationId = "local.iconstudio"; minSdk = 28; targetSdk = 35; versionCode = 10; versionName = "0.10-review-navigation"; testInstrumentationRunner = "local.iconstudio.ProofInstrumentation" }
+    defaultConfig { applicationId = "local.iconstudio"; minSdk = 28; targetSdk = 35; versionCode = 13; versionName = "0.13"; testInstrumentationRunner = "local.iconstudio.ProofInstrumentation" }
     buildFeatures { compose = true }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_11; targetCompatibility = JavaVersion.VERSION_11 }
     kotlinOptions { jvmTarget = "11" }

@@ -55,7 +55,6 @@ exports/
 # Publish only the latest app; template.apk is a required, blank build asset.
 *.apk
 !app/src/main/assets/template.apk
-!delivery/Prism-Icon-Studio-0.10.apk
 delivery/*
-!delivery/Prism-Icon-Studio-0.10.apk
+!delivery/Prism-Icon-Studio-0.13.apk
 !delivery/SHA256SUMS.txt
